@@ -105,13 +105,18 @@ class FavaLedger():
         'account_types', 'accounts', 'all_entries', 'all_entries_by_type',
         'all_root_account', 'beancount_file_path',
         '_date_first', '_date_last', 'entries', 'errors',
-        'fava_options', '_filters', '_is_encrypted', 'options', 'price_map',
+        'fava_options', '_filters', '_is_gcs', '_is_encrypted', 'options', 'price_map',
         'root_account', 'root_tree', '_watcher'] + MODULES
 
     def __init__(self, path):
         #: The path to the main Beancount file.
         self.beancount_file_path = path
-        self._is_encrypted = is_encrypted_file(path)
+        if path.startswith('gs://'):
+            self._is_gcs = True
+            self._is_encrypted = False
+        else:
+            # TODO: encrypted on gcs
+            self._is_encrypted = is_encrypted_file(path)
         self._filters = {}
 
         #: An :class:`AttributesModule` instance.
@@ -169,7 +174,11 @@ class FavaLedger():
     def load_file(self):
         """Load the main file and all included files and set attributes."""
         # use the internal function to disable cache
-        if not self._is_encrypted:
+        if self._is_gcs:
+            self.all_entries, self.errors, self.options = \
+                loader.load_gcs(self.beancount_file_path)
+            self.account_types = get_account_types(self.options)
+        elif not self._is_encrypted:
             # pylint: disable=protected-access
             self.all_entries, self.errors, self.options = \
                 loader._load([(self.beancount_file_path, True)],
