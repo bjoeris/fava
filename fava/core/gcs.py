@@ -24,197 +24,44 @@ from beancount.utils import file_utils
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
 
-def _parse_recursive_gcs(sources, log_timings, extra_validations, encoding):
-    """Parse Beancount input, run its transformations and validate it.
+def _parse_gcs_path(gcs_path):
+    prefix = "gs://"
+    assert gcs_path.startswith(prefix)
+    bucket_name, file_name = source[len(prefix):].split("/", 1)
+    return bucket_name, file_name
 
-    Recursively parse a list of files or strings and their include files and
-    return an aggregate of parsed directives, errors, and the top-level
-    options-map. If the same file is being parsed twice, ignore it and issue an
-    error.
 
-    Args:
-      sources: A list of (filename-or-string, is-filename) where the first
-        element is a string, with either a filename or a string to be parsed directly,
-        and the second arugment is a boolean that is true if the first is a filename.
-        You may provide a list of such arguments to be parsed. Filenames must be absolute
-        paths.
-      log_timings: A function to write timings to, or None, if it should remain quiet.
-      encoding: A string or None, the encoding to decode the input filename with.
-    Returns:
-      A tuple of (entries, parse_errors, options_map).
-    """
-    assert isinstance(sources, list) and all(isinstance(el, tuple) for el in sources)
+def _load_gcs_string(gcs_path):
+    # All filenames here must be absolute.
+    bucket_name, file_name = _parse_gcs_path(gcs_path)
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob()
+    try:
+        source = blob.download_as_string()
+    except NotFound:
+        # File that does not exist.
+        errors = [LoadError(data.new_metadata("<load>", 0),
+                        'File "{}" does not exist'.format(filename), None)]
+        return None, errors
 
-    storage_client = storage.Client()
+def _include_handler_gcs(cwd, include_filename):
+    if cwd is None:
+        errors = [LoadError(data.new_metadata("<load>", 0),
+                            'File "{}" is a relative path included in a string'.format(
+                                include_filename), None)]
+        return [], errors
+    if not include_filename.startswith("gs://"):
+        if include_filename.startswith('/'):
+            bucket_name, file_name = _parse_gcs_path(cwd)
+            include_filename = "gs://{}{}".format(bucket_name, include_filename)
+        else:
+            include_filename = path.join(cwd, include_filename)
+        include_filename = path.normpath(include_filename)
+    include_content, load_errors = _load_gcs_string(include_filename)
+    if len(load_errors) > 0:
+        return [], load_errors
+    return [(include_content, False)], []
 
-    # Current parse state.
-    entries, parse_errors = [], []
-    options_map = None
-
-    # A stack of sources to be parsed.
-    source_stack = list(sources)
-
-    # A list of absolute filenames that have been parsed in the past, used to
-    # detect and avoid duplicates (cycles).
-    filenames_seen = set()
-
-    with misc_utils.log_time('beancount.parser.parser', log_timings, indent=1):
-        while source_stack:
-            source, is_file = source_stack.pop(0)
-            is_top_level = options_map is None
-
-            if is_file:
-                # All filenames here must be absolute.
-                prefix = "gs://"
-                assert source.startswith(prefix)
-                bucket_name, file_name = source[len(prefix):].split("/", 1)
-
-                # Check for file previously parsed... detect duplicates.
-                if source in filenames_seen:
-                    parse_errors.append(
-                        LoadError(data.new_metadata("<load>", 0),
-                                  'Duplicate filename parsed: "{}"'.format(source),
-                                  None))
-                    continue
-
-                bucket = storage_client.bucket(bucket_name)
-                blob = bucket.blob()
-                try:
-                    source = blob.download_as_string()
-                    filenames_seen.add(source)
-
-                    cwd = path.dirname(filename)
-                except NotFound:
-                    # File that does not exist.
-                    parse_errors.append(
-                        LoadError(data.new_metadata("<load>", 0),
-                                  'File "{}" does not exist'.format(filename), None))
-                    continue
-
-            else:
-                # If we're parsing a string, there is no CWD
-                cwd = None
-
-            # Encode the contents if necessary.
-            if encoding:
-                if isinstance(source, bytes):
-                    source = source.decode(encoding)
-                source = source.encode('ascii', 'replace')
-
-            # Parse a string buffer from memory.
-            with misc_utils.log_time('fava.parser.parser.parse_string',
-                                        log_timings, indent=2):
-                (src_entries,
-                 src_errors,
-                 src_options_map) = parser.parse_string(source)
-
-            # Merge the entries resulting from the parsed file.
-            entries.extend(src_entries)
-            parse_errors.extend(src_errors)
-
-            # We need the options from the very top file only (the very
-            # first file being processed). No merging of options should
-            # occur.
-            if is_top_level:
-                options_map = src_options_map
-            else:
-                aggregate_options_map(options_map, src_options_map)
-
-            # Add includes to the list of sources to process.
-            for include_filename in src_options_map['include']:
-                if include_filename.startswith("gs://"):
-                    pass
-                elif include_filename.startswith("/"):
-                    include_filename = "gs://" + bucket_name + "/" + include_filename
-                else:
-                    if cwd is None:
-                        parse_errors.append(
-                            LoadError(data.new_metadata("<load>", 0),
-                                      'File "{}" is a relative path included in a string'.format(
-                                          include_filename), None))
-                    include_filename = cwd + '/' + include_filename
-
-                parts = include_filename.split('/')
-                new_parts = []
-                for p in parts:
-                    if p == '.':
-                        continue
-                    elif p == '..':
-                        if len(new_parts) > 0:
-                            new_parts.pop()
-                    else:
-                        new_parts.append(p)
-                include_filename = '/'.join(new_parts)
-
-                # TODO: glob pattern matching
-
-                # Add the include filenames to be processed later.
-                source_stack.append((include_filename, True))
-
-    # Make sure we have at least a dict of valid options.
-    if options_map is None:
-        options_map = options.OPTIONS_DEFAULTS.copy()
-
-    # Save the set of parsed filenames in options_map.
-    options_map['include'] = sorted(filenames_seen)
-
-    return entries, parse_errors, options_map
-
-def _load_gcs(sources, log_timings, extra_validations, encoding):
-    """Parse Beancount input, run its transformations and validate it.
-
-    (This is an internal method.)
-    This routine does all that is necessary to obtain a list of entries ready
-    for realization and working with them. This is the principal call for of the
-    scripts that load a ledger. It returns a list of entries transformed and
-    ready for reporting, a list of errors, and parser's options dict.
-
-    Args:
-      sources: A list of (filename-or-string, is-filename) where the first
-        element is a string, with either a filename or a string to be parsed directly,
-        and the second arugment is a boolean that is true if the first is a filename.
-        You may provide a list of such arguments to be parsed. Filenames must be absolute
-        paths.
-      log_timings: A file object or function to write timings to,
-        or None, if it should remain quiet.
-      extra_validations: A list of extra validation functions to run after loading
-        this list of entries.
-      encoding: A string or None, the encoding to decode the input filename with.
-    Returns:
-      See load() or load_string().
-    """
-    assert isinstance(sources, list) and all(isinstance(el, tuple) for el in sources)
-
-    if hasattr(log_timings, 'write'):
-        log_timings = log_timings.write
-
-    # Parse all the files recursively.
-    entries, parse_errors, options_map = _parse_recursive_gcs(sources, log_timings, encoding)
-
-    # Ensure that the entries are sorted before running any processes on them.
-    entries.sort(key=data.entry_sortkey)
-
-    # Run interpolation on incomplete entries.
-    entries, balance_errors = booking.book(entries, options_map)
-    parse_errors.extend(balance_errors)
-
-    # Transform the entries.
-    entries, errors = run_transformations(entries, parse_errors, options_map, log_timings)
-
-    # Validate the list of entries.
-    with misc_utils.log_time('beancount.ops.validate', log_timings, indent=1):
-        valid_errors = validation.validate(entries, options_map, log_timings,
-                                           extra_validations)
-        errors.extend(valid_errors)
-
-        # Note: We could go hardcore here and further verify that the entries
-        # haven't been modified by user-provided validation routines, by
-        # comparing hashes before and after. Not needed for now.
-
-    # Compute the input hash.
-    options_map['input_hash'] = compute_input_hash(options_map['include'])
-
-    return entries, errors, options_map
 
 def load_gcs(filename, log_timings=None, log_errors=None, extra_validations=None,
              encoding=None):
@@ -236,9 +83,8 @@ def load_gcs(filename, log_timings=None, log_errors=None, extra_validations=None
       options parsed from the file.
     """
 
-    entries, errors, options_map = _load_gcs(
-        filename, log_timings,
-        extra_validations, encoding)
+    entries, errors, option_map = loader._load(_include_handler_gcs(None, filename),
+                                               log_timings, extra_validations, encoding)
     _log_errors(errors, log_errors)
     return entries, errors, options_map
 
