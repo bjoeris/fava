@@ -116,6 +116,7 @@ class FavaLedger():
             self._is_encrypted = False
         else:
             # TODO: encrypted on gcs
+            self._is_gcs = False
             self._is_encrypted = is_encrypted_file(path)
         self._filters = {}
 
