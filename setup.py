@@ -36,7 +36,7 @@ setup(
         'Flask-Babel>=0.10.0',
         'Flask>=0.10.1',
         'Jinja2>=2.10',
-        'beancount>=2.1.2',
+        'beancount',
         'click',
         'markdown2>=2.3.0',
         'ply',
