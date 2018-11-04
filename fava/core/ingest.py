@@ -77,7 +77,7 @@ class IngestModule(FavaModule):
         if not filename or not importer_name:
             return []
 
-        if os.stat(self.module_path).st_mtime_ns > self.mtime:
+        if self.module_path is not None and os.stat(self.module_path).st_mtime_ns > self.mtime:
             self.load_file()
 
         new_entries = extract.extract_from_file(

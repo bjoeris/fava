@@ -23,6 +23,21 @@
     </form>
   </div>
 </div>
+<div id="ingest-upload" class="ingest-upload overlay-wrapper">
+  <div class="overlay">
+    <button type=button class="link close-overlay">({{ _('close') }})</button>
+    <form id="ingest-upload-form" data-event="ingest-upload" data-url="{{ url_for('json_api.ingest_upload') }}">
+      <h3>{{ _('Import file(s)') }}:</h3>
+      <input type="file" name="file">
+      <div class="fieldset">
+        <label for="account">{{ _('Account') }}:</label>
+        <input type="text" name="account" list="accounts">
+        <input type="hidden" name="hash">
+      </div>
+      <button type="submit">{{ _('Upload') }}</button>
+    </form>
+  </div>
+</div>
 <div id="transaction" class="transaction-overlay overlay-wrapper">
   <div class="overlay">
     <button type=button class="link close-overlay">({{ _('close') }})</button>

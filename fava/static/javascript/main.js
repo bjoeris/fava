@@ -41,6 +41,7 @@ import './autocomplete';
 import './charts';
 import './clipboard';
 import './documents-upload';
+import './ingest-upload';
 import './editor';
 import './entry-forms';
 import './filters';

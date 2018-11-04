@@ -84,6 +84,11 @@
   min-width: 60%;
 }
 
+.ingest-upload .fieldset input {
+  flex-grow: 1;
+  min-width: 60%;
+}
+
 .transaction-overlay form > .fieldset button {
   margin-bottom: 0;
   margin-top: .7em;

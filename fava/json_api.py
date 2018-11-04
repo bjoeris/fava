@@ -6,14 +6,17 @@ interface for asynchronous functionality.
 
 import os
 import functools
+from datetime import datetime
 
-from flask import Blueprint, jsonify, g, request
+from flask import Blueprint, jsonify, g, request, current_app, url_for
 from werkzeug.utils import secure_filename
 
 from fava.serialisation import deserialise, serialise
 from fava.core.file import save_entry_slice
 from fava.core.helpers import FavaAPIException
 from fava.core.misc import align
+
+from beancount.ingest.importers import ofx
 
 json_api = Blueprint('json_api', __name__)  # pylint: disable=invalid-name
 
@@ -112,7 +115,6 @@ def payee_transaction():
     entry = g.ledger.attributes.payee_transaction(request.args.get('payee'))
     return {'payload': serialise(entry)}
 
-
 @json_api.route('/add-document/', methods=['PUT'])
 @json_response
 def add_document():
@@ -155,6 +157,52 @@ def add_document():
         g.ledger.file.insert_metadata(request.form['hash'], 'statement',
                                       filename)
     return {'message': 'Uploaded to {}'.format(filepath)}
+
+
+@json_api.route('/ingest-upload/', methods=['PUT'])
+@json_response
+def ingest_upload():
+    """Upload a file containing transactions to ingest."""
+
+    upload = request.files['file']
+    if not upload:
+        raise FavaAPIException('No file uploaded.')
+    
+    if 'INGEST_TEMP_DIR' in current_app.config:
+        folder = current_app.config['INGEST_TEMP_DIR']
+    else:
+        folder = '/tmp/fava-ingest/'
+
+    filename = upload.filename
+    for sep in os.path.sep, os.path.altsep:
+        if sep:
+            filename = filename.replace(sep, ' ')
+
+    if not os.path.supports_unicode_filenames:
+        filename = secure_filename(filename)
+    
+    _, extension = os.path.splitext(filename)
+    
+    filename = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + extension
+    
+    filepath = os.path.join(folder, filename)
+
+    if os.path.exists(filepath):
+        raise FavaAPIException('{} already exists.'.format(filepath))
+
+    if not os.path.exists(folder):
+        os.makedirs(folder, exist_ok=True)
+
+    upload.save(filepath)
+
+    if request.form.get('hash'):
+        g.ledger.file.insert_metadata(request.form['hash'], 'statement',
+                                      filename)
+    importer = ofx.Importer("", request.form['account'])
+    if importer.name() not in g.ledger.ingest.importers:
+        g.ledger.ingest.importers[importer.name()] = importer
+    return {'message': 'Uploaded to {}'.format(filepath),
+            'redirect': url_for('report', report_name='extract', filename=filepath, importer=importer.name())}
 
 
 @json_api.route('/add-entries/', methods=['PUT'])

@@ -13,6 +13,8 @@ export default function handleHash() {
     $('#transaction-form input').focus();
   } else if (hash === '#export') {
     $('#export-overlay').classList.add('shown');
+  } else if (hash === '#import') {
+    $('#ingest-upload').classList.add('shown');
   } else if (hash.startsWith('#context')) {
     $.fetch(`${window.favaAPI.baseURL}_context/?entry_hash=${hash.slice(9)}`)
       .then(response => response.text())
